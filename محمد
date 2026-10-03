@@ -1,0 +1,136 @@
+import os
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import yt_dlp
+
+TOKEN = "8870700932:AAF64lcmES_9wPU9GAfSZA2FyJadicE0Eh0"
+CHANNEL_USERNAME = "@YourChannelUsername"  # ضع معرف قناتك هنا (مثال: @mychannel)
+
+bot = telebot.TeleBot(TOKEN)
+
+def check_subscription(user_id):
+    if not CHANNEL_USERNAME or CHANNEL_USERNAME == "@YourChannelUsername":
+        return True
+    try:
+        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+    except:
+        pass
+    return False
+
+user_states = {}
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    
+    if not check_subscription(user_id):
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("اشترك في القناة 🔔", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"))
+        markup.add(InlineKeyboardButton("تحقق من الاشتراك ✅", callback_data="check_sub"))
+        bot.reply_to(message, "عذراً، يجب عليك الاشتراك في قناة البوت أولاً لتتمكن من استخدامه! 🔒\n\nاشترك ثم اضغط على (تحقق من الاشتراك).", reply_markup=markup)
+        return
+
+    show_main_menu(message.chat.id)
+
+def show_main_menu(chat_id):
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("🎵 تحميل فيديوهات تيك توك", callback_data="mode_tiktok"),
+        InlineKeyboardButton("📸 تحميل فيديوهات إنستغرام", callback_data="mode_instagram")
+    )
+    bot.send_message(chat_id, "مرحباً بك في بوت التحميل الخارق 🚀\nاختر المنصة التي تريد التحميل منها:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callbacks(call):
+    user_id = call.from_user.id
+    
+    if call.data == "check_sub":
+        if check_subscription(user_id):
+            bot.answer_callback_query(call.id, "تم التحقق بنجاح! ✅")
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            show_main_menu(call.message.chat.id)
+        else:
+            bot.answer_callback_query(call.id, "انت لست مشتركاً في القناة بعد! ❌", show_alert=True)
+        return
+
+    if call.data.startswith("mode_"):
+        mode = call.data.split("_")[1]
+        user_states[user_id] = mode
+        
+        platform_names = {
+            "tiktok": "تيك توك 🎵",
+            "instagram": "إنستغرام 📸"
+        }
+        
+        bot.answer_callback_query(call.id, f"تم اختيار {platform_names[mode]}")
+        bot.send_message(call.message.chat.id, f"تم تفعيل وضع **{platform_names[mode]}** بنجاح ✅\nالآن أرسل رابط {platform_names[mode]} مباشرة للتحميل:")
+
+@bot.message_handler(func=lambda message: message.text and message.text.startswith("http"))
+def download_media(message):
+    user_id = message.from_user.id
+    
+    if not check_subscription(user_id):
+        bot.reply_to(message, "عذراً، يجب عليك الاشتراك في قناة البوت أولاً لاستخدام الأداة! 🔒")
+        return
+
+    mode = user_states.get(user_id)
+    if not mode:
+        bot.reply_to(message, "يرجى اختيار القسم أولاً بإرسال الأمر /start 📌")
+        return
+
+    url = message.text.strip().lower()
+
+    # التحقق من أن الرابط يتبع المنصة المختارة حصراً
+    if mode == "tiktok" and not ("tiktok.com" in url or "vt.tiktok.com" in url):
+        bot.reply_to(message, "❌ عذراً، أنت في وضع **تيك توك**، يرجى إرسال رابط تيك توك صحيح فقط!")
+        return
+    elif mode == "instagram" and not ("instagram.com" in url or "instagr.am" in url):
+        bot.reply_to(message, "❌ عذراً، أنت في وضع **إنستغرام**، يرجى إرسال رابط إنستغرام صحيح فقط!")
+        return
+
+    processing_msg = bot.reply_to(message, "جارِ المعالجة والتحميل بأفضل سرعة... ⏳")
+    
+    base_filename = f"media_{message.chat.id}"
+    real_filename = None
+
+    ydl_opts = {
+        'format': 'best[height<=720]/best',
+        'outtmpl': f'{base_filename}.%(ext)s',
+        'noplaylist': True,
+        'quiet': True,
+        'geo_bypass': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(message.text.strip(), download=True)
+            real_filename = ydl.prepare_filename(info)
+
+        if real_filename and os.path.exists(real_filename):
+            bot.edit_message_text(chat_id=message.chat.id, message_id=processing_msg.message_id, text="جارِ رفع الفيديو إليك 🚀")
+            
+            with open(real_filename, 'rb') as video_file:
+                bot.send_video(chat_id=message.chat.id, video=video_file, caption="تم التنزيل بنجاح بدون علامة مائية ✅")
+            
+            bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
+            os.remove(real_filename)
+        else:
+            bot.edit_message_text(chat_id=message.chat.id, message_id=processing_msg.message_id, text="عذراً، لم يتم العثور على الملف.")
+            
+    except Exception as e:
+        try:
+            bot.edit_message_text(chat_id=message.chat.id, message_id=processing_msg.message_id, text=f"حدث خطأ أثناء التحميل: {str(e)[:50]}")
+        except:
+            pass
+    finally:
+        if real_filename and os.path.exists(real_filename):
+            os.remove(real_filename)
+
+if __name__ == "__main__":
+    print("Bot is running smoothly...")
+    bot.infinity_polling(skip_pending=True)
